@@ -56,20 +56,46 @@ chmod +x ./install-macos-karabiner.sh
 
 然后手动到 Karabiner-Elements > Complex Modifications > Add rule 启用 `Capslox Basic Navigation`。
 
-## Modifier Keys 互换
+## Modifier Keys 修复
 
 如果你在 macOS System Settings 里把 `Control` 和 `Globe` 互换了，安装 Karabiner 后可能看起来“失效”。原因是 Karabiner 会通过自己的虚拟键盘重新发出事件，macOS 的 Modifier Keys 设置不一定作用在你截图里选中的 `Apple Internal Keyboard / Trackpad` 上。
 
-更稳的做法是把这个互换也写进 Karabiner：
+如果只想交换 macOS 内置键盘的 `Fn/Globe` 和 `Control`，同时保留外接键盘自己的设置，运行：
 
 ```sh
 ./install-macos-karabiner.sh --swap-control-globe
 ```
 
-这会在当前 Karabiner profile 里加入：
+这会：
 
-- `left_control` -> `keyboard_fn` (`Globe/Fn`)
-- `keyboard_fn` (`Globe/Fn`) -> `left_control`
+- 清掉旧版脚本写入的 profile 级别 `Fn/Control` Simple Modifications
+- 加入一条只匹配内置键盘的 complex modification：`device_if` / `is_built_in_keyboard: true`
+- 在内置键盘上交换 `Fn/Globe` 和 `left_control`
+- 不改外接键盘的 `right_option` / `fn` / `control` 等键位
+
+不要把 `Fn/Globe` 和 `Control` 写成 Karabiner profile 级别的 Simple Modifications；profile 级别会影响所有当前和未来接入的外接键盘，可能导致外接键盘的 modifier 键位错乱。
+
+## IQUNIX ZONEX75 外接键盘修复
+
+如果 IQUNIX ZONEX75 在 Karabiner EventViewer 里表现为：
+
+- 物理 `Right Opt` 输出 `right_command`
+- 物理 `Right Ctrl` 输出 `right_option`
+- 物理 `Fn` 输出 `keyboard_fn`，但 `Fn + C` 不能当作 `Control + C`
+
+运行：
+
+```sh
+./install-macos-karabiner.sh --fix-iqunix-zonex75
+```
+
+这会加入一条只匹配 `vendor_id: 12815` / `product_id: 20754` 的 complex modification：
+
+- `right_command` -> `right_option`
+- `right_option` -> `right_control`
+- `keyboard_fn` -> `right_control`
+
+这条规则只作用于 IQUNIX ZONEX75，不影响内置键盘或其他外接键盘。
 
 ## 注意
 

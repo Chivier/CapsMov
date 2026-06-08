@@ -9,10 +9,11 @@ CONFIG_FILE="${KARABINER_DIR}/karabiner.json"
 ENABLE_RULE=1
 OPEN_APP=1
 SWAP_CONTROL_GLOBE=0
+FIX_IQUNIX_ZONEX75=0
 
 usage() {
   cat <<'USAGE'
-Usage: ./install-macos-karabiner.sh [--asset-only] [--no-open] [--swap-control-globe]
+Usage: ./install-macos-karabiner.sh [--asset-only] [--no-open] [--swap-control-globe] [--fix-iqunix-zonex75]
 
 Installs a Karabiner-Elements rule for:
   Caps Lock + E/D/S/F -> Up/Down/Left/Right
@@ -22,9 +23,13 @@ Options:
   --asset-only  Only write the complex-modification JSON asset; do not edit karabiner.json.
   --no-open     Do not open Karabiner-Elements after installing.
   --swap-control-globe
-               Also add Karabiner Simple Modifications for:
-                 Control -> Globe/Fn
-                 Globe/Fn -> Control
+               Swap Fn/Globe and Control only on the built-in keyboard.
+               External keyboards keep their own modifier settings.
+  --fix-iqunix-zonex75
+               Normalize the IQUNIX ZONEX75 right-side modifiers:
+                 Right Command -> Right Option
+                 Right Option  -> Right Control
+                 keyboard_fn    -> Right Control
   -h, --help    Show this help.
 USAGE
 }
@@ -39,6 +44,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --swap-control-globe)
       SWAP_CONTROL_GLOBE=1
+      ;;
+    --fix-iqunix-zonex75)
+      FIX_IQUNIX_ZONEX75=1
       ;;
     -h|--help)
       usage
@@ -321,7 +329,7 @@ Open Karabiner-Elements > Complex Modifications > Add rule, then enable:
   ${RULE_DESCRIPTION}
 WARN
   else
-    CONFIG_FILE="${CONFIG_FILE}" ASSET_FILE="${ASSET_FILE}" SWAP_CONTROL_GLOBE="${SWAP_CONTROL_GLOBE}" python3 <<'PY'
+    CONFIG_FILE="${CONFIG_FILE}" ASSET_FILE="${ASSET_FILE}" SWAP_CONTROL_GLOBE="${SWAP_CONTROL_GLOBE}" FIX_IQUNIX_ZONEX75="${FIX_IQUNIX_ZONEX75}" python3 <<'PY'
 import datetime
 import json
 import os
@@ -332,6 +340,137 @@ config_path = Path(os.environ["CONFIG_FILE"]).expanduser()
 asset_path = Path(os.environ["ASSET_FILE"]).expanduser()
 rule_doc = json.loads(asset_path.read_text())
 new_rules = rule_doc["rules"]
+if os.environ.get("SWAP_CONTROL_GLOBE") == "1":
+    built_in_keyboard_condition = {
+        "type": "device_if",
+        "identifiers": [
+            {
+                "is_built_in_keyboard": True
+            }
+        ]
+    }
+    new_rules = [
+        *new_rules,
+        {
+            "description": "Swap Fn/Globe and Control on the built-in keyboard only",
+            "manipulators": [
+                {
+                    "type": "basic",
+                    "from": {
+                        "apple_vendor_top_case_key_code": "keyboard_fn",
+                        "modifiers": {
+                            "optional": [
+                                "any"
+                            ]
+                        }
+                    },
+                    "to": [
+                        {
+                            "key_code": "left_control"
+                        }
+                    ],
+                    "conditions": [
+                        built_in_keyboard_condition
+                    ]
+                },
+                {
+                    "type": "basic",
+                    "from": {
+                        "key_code": "left_control",
+                        "modifiers": {
+                            "optional": [
+                                "any"
+                            ]
+                        }
+                    },
+                    "to": [
+                        {
+                            "apple_vendor_top_case_key_code": "keyboard_fn"
+                        }
+                    ],
+                    "conditions": [
+                        built_in_keyboard_condition
+                    ]
+                }
+            ]
+        }
+    ]
+if os.environ.get("FIX_IQUNIX_ZONEX75") == "1":
+    iqunix_zonex75_condition = {
+        "type": "device_if",
+        "identifiers": [
+            {
+                "vendor_id": 12815,
+                "product_id": 20754,
+                "is_keyboard": True
+            }
+        ]
+    }
+    new_rules = [
+        *new_rules,
+        {
+            "description": "Normalize IQUNIX ZONEX75 right-side modifiers",
+            "manipulators": [
+                {
+                    "type": "basic",
+                    "from": {
+                        "key_code": "right_command",
+                        "modifiers": {
+                            "optional": [
+                                "any"
+                            ]
+                        }
+                    },
+                    "to": [
+                        {
+                            "key_code": "right_option"
+                        }
+                    ],
+                    "conditions": [
+                        iqunix_zonex75_condition
+                    ]
+                },
+                {
+                    "type": "basic",
+                    "from": {
+                        "key_code": "right_option",
+                        "modifiers": {
+                            "optional": [
+                                "any"
+                            ]
+                        }
+                    },
+                    "to": [
+                        {
+                            "key_code": "right_control"
+                        }
+                    ],
+                    "conditions": [
+                        iqunix_zonex75_condition
+                    ]
+                },
+                {
+                    "type": "basic",
+                    "from": {
+                        "apple_vendor_top_case_key_code": "keyboard_fn",
+                        "modifiers": {
+                            "optional": [
+                                "any"
+                            ]
+                        }
+                    },
+                    "to": [
+                        {
+                            "key_code": "right_control"
+                        }
+                    ],
+                    "conditions": [
+                        iqunix_zonex75_condition
+                    ]
+                }
+            ]
+        }
+    ]
 new_descriptions = {rule["description"] for rule in new_rules}
 
 created_config = False
@@ -377,7 +516,7 @@ if os.environ.get("SWAP_CONTROL_GLOBE") == "1":
     if not isinstance(simple_modifications, list):
         raise TypeError("profile.simple_modifications must be a list")
 
-    swap_modifications = [
+    old_profile_level_swaps = [
         {
             "from": {
                 "key_code": "left_control"
@@ -397,17 +536,42 @@ if os.environ.get("SWAP_CONTROL_GLOBE") == "1":
                     "key_code": "left_control"
                 }
             ]
+        },
+        {
+            "from": {
+                "key_code": "left_control"
+            },
+            "to": [
+                {
+                    "key_code": "fn"
+                }
+            ]
+        },
+        {
+            "from": {
+                "key_code": "fn"
+            },
+            "to": [
+                {
+                    "key_code": "left_control"
+                }
+            ]
         }
     ]
-    swap_froms = {
-        json.dumps(item["from"], sort_keys=True)
-        for item in swap_modifications
+    old_profile_level_swap_keys = {
+        json.dumps(
+            {"from": item.get("from", {}), "to": item.get("to", [])},
+            sort_keys=True,
+        )
+        for item in old_profile_level_swaps
     }
     simple_modifications[:] = [
         item for item in simple_modifications
-        if json.dumps(item.get("from", {}), sort_keys=True) not in swap_froms
+        if json.dumps(
+            {"from": item.get("from", {}), "to": item.get("to", [])},
+            sort_keys=True,
+        ) not in old_profile_level_swap_keys
     ]
-    simple_modifications.extend(swap_modifications)
 
 config_path.parent.mkdir(parents=True, exist_ok=True)
 backup_path = None
@@ -422,7 +586,9 @@ tmp_path.replace(config_path)
 
 print(f"Enabled rule in profile: {profile.get('name', 'Default profile')}")
 if os.environ.get("SWAP_CONTROL_GLOBE") == "1":
-    print("Added Simple Modifications: Control <-> Globe/Fn")
+    print("Enabled built-in keyboard Fn/Globe <-> Control rule")
+if os.environ.get("FIX_IQUNIX_ZONEX75") == "1":
+    print("Enabled IQUNIX ZONEX75 right-side modifier normalization rule")
 if backup_path:
     print(f"Backup: {backup_path}")
 elif created_config:
