@@ -22,7 +22,10 @@ final class CapsloxRuntime {
     }
 
     var isRunning: Bool {
-        eventTap != nil && startErrorMessage == nil
+        guard eventTap != nil, startErrorMessage == nil, let eventTapPort else {
+            return false
+        }
+        return CGEvent.tapIsEnabled(tap: eventTapPort)
     }
 
     var isEnabled: Bool {
@@ -59,6 +62,7 @@ final class CapsloxRuntime {
             """
             return false
         }
+        eventTap.setEventTapPort(tap)
 
         let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
@@ -101,6 +105,7 @@ private final class CapsloxEventTap {
     private let engine: CapsloxEngine
     private let engineLock = NSLock()
     private let lockStateController = CapsLockLockStateController()
+    private var eventTapPort: CFMachPort?
     private var enabled = true
     private lazy var capsLockMonitor = CapsLockPhysicalMonitor { [weak self] phase in
         self?.handleCapsLockTransition(phase)
@@ -118,6 +123,10 @@ private final class CapsloxEventTap {
 
     func start() -> Bool {
         lockStateController.start() && capsLockMonitor.start()
+    }
+
+    func setEventTapPort(_ eventTapPort: CFMachPort) {
+        self.eventTapPort = eventTapPort
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -138,6 +147,11 @@ private final class CapsloxEventTap {
     }
 
     func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            reenableEventTap()
+            return Unmanaged.passUnretained(event)
+        }
+
         if isGeneratedByCapslox(event) {
             return Unmanaged.passUnretained(event)
         }
@@ -163,6 +177,13 @@ private final class CapsloxEventTap {
             output.forEach(post)
             return nil
         }
+    }
+
+    private func reenableEventTap() {
+        guard let eventTapPort else {
+            return
+        }
+        CGEvent.tapEnable(tap: eventTapPort, enable: true)
     }
 
     private func handleCapsLockTransition(_ phase: KeyPhase) {

@@ -1,10 +1,20 @@
 import AppKit
+import ApplicationServices
 import CapsloxCore
+import Carbon
+import CoreGraphics
 import Darwin
+import IOKit
+import IOKit.hid
 import SwiftUI
 
 if CommandLine.arguments.contains("--smoke-test-ui") {
-    print("\(CapsloxPresentation.appDisplayName) status bar UI ready")
+    let icon = CapsloxStatusIcon.makeImage()
+    guard icon.size.width > 0, icon.size.height > 0 else {
+        fputs("\(CapsloxPresentation.appDisplayName) status bar icon unavailable\n", stderr)
+        exit(1)
+    }
+    print("\(CapsloxPresentation.appDisplayName) status bar UI ready; status icon ready")
     exit(0)
 }
 
@@ -57,12 +67,13 @@ private final class CapsloxStatusBarController: NSObject {
             button.image = CapsloxStatusIcon.makeImage()
             button.imagePosition = .imageOnly
             button.toolTip = CapsloxPresentation.statusBarTooltip
+            button.setAccessibilityLabel(CapsloxPresentation.appDisplayName)
             button.target = self
             button.action = #selector(togglePopover(_:))
         }
 
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 340, height: 430)
+        popover.contentSize = NSSize(width: 340, height: 500)
         popover.contentViewController = NSHostingController(rootView: CapsloxPopoverView(viewModel: viewModel))
 
         if showPopoverForScreenshot {
@@ -100,6 +111,7 @@ private final class CapsloxStatusViewModel: ObservableObject {
     @Published var isEnabled: Bool
     @Published var isRuntimeReady: Bool
     @Published var accessibilityTrusted: Bool
+    @Published var secureInputStatus: SecureInputStatus?
     @Published var launchAgentInstalled: Bool
     @Published var launchAgentError: String?
     @Published var startErrorMessage: String?
@@ -111,6 +123,7 @@ private final class CapsloxStatusViewModel: ObservableObject {
         isEnabled = runtime.isEnabled
         isRuntimeReady = runtime.isRunning
         accessibilityTrusted = AXIsProcessTrusted()
+        secureInputStatus = SecureInputMonitor.currentStatus()
         launchAgentInstalled = Self.defaultLaunchAgentPathExists()
         launchAgentError = nil
         startErrorMessage = runtime.startErrorMessage
@@ -120,12 +133,18 @@ private final class CapsloxStatusViewModel: ObservableObject {
         if !isRuntimeReady {
             return "Needs Permission"
         }
+        if secureInputStatus != nil {
+            return "Blocked"
+        }
         return isEnabled ? "Running" : "Paused"
     }
 
     var statusDetail: String {
         if !isRuntimeReady {
             return "Enable Accessibility and Input Monitoring, then restart."
+        }
+        if let secureInputStatus {
+            return CapsloxPresentation.secureInputDetail(for: secureInputStatus)
         }
         if isEnabled {
             return "Caps is active as a hold-to-navigate layer."
@@ -166,6 +185,22 @@ private final class CapsloxStatusViewModel: ObservableObject {
         accessibilityTrusted = AXIsProcessTrusted()
         launchAgentInstalled = Self.defaultLaunchAgentPathExists()
         startErrorMessage = runtime.startErrorMessage
+        secureInputStatus = SecureInputMonitor.currentStatus()
+    }
+
+    func resolveSecureInput() {
+        guard let secureInputStatus else {
+            refresh()
+            return
+        }
+
+        if secureInputStatus.owner != nil, !SecureInputMonitor.requestOwnerQuit(for: secureInputStatus) {
+            launchAgentError = "Could not quit \(secureInputStatus.owner?.name ?? "the blocking app"). Quit it manually and refresh."
+        }
+        refresh()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.refresh()
+        }
     }
 
     func openAccessibilitySettings() {
@@ -266,6 +301,285 @@ private enum LaunchAgentManager {
     }
 }
 
+private enum SecureInputMonitor {
+    static func currentStatus() -> SecureInputStatus? {
+        // `IsSecureEventInputEnabled()` is the authoritative signal for whether
+        // Secure Input is active right now. `kCGSSessionSecureInputPID` from ioreg
+        // can retain a stale PID, so it is only used to name the owner once we
+        // already know Secure Input is on.
+        guard IsSecureEventInputEnabled() else {
+            return nil
+        }
+
+        var status = ProcessOutput.run(
+            executablePath: "/usr/sbin/ioreg",
+            arguments: ["-l", "-w", "0", "-r", "-c", "IOResources"]
+        ).flatMap(SecureInputStatus.parseIORegistryOutput) ?? SecureInputStatus(pid: 0, owner: nil)
+
+        status.owner = status.pid > 0 ? owner(for: status.pid) : nil
+        return status
+    }
+
+    static func requestOwnerQuit(for status: SecureInputStatus) -> Bool {
+        guard let owner = status.owner,
+              let app = NSRunningApplication(processIdentifier: pid_t(owner.pid))
+        else {
+            return false
+        }
+        return app.terminate()
+    }
+
+    private static func owner(for pid: Int) -> SecureInputOwner? {
+        if let app = NSRunningApplication(processIdentifier: pid_t(pid)) {
+            let name = app.localizedName ?? app.bundleIdentifier ?? "pid \(pid)"
+            return SecureInputOwner(pid: pid, name: name, bundleIdentifier: app.bundleIdentifier)
+        }
+
+        guard let command = ProcessOutput.run(
+            executablePath: "/bin/ps",
+            arguments: ["-p", "\(pid)", "-o", "comm="]
+        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !command.isEmpty
+        else {
+            return nil
+        }
+
+        return SecureInputOwner(
+            pid: pid,
+            name: URL(fileURLWithPath: command).lastPathComponent,
+            bundleIdentifier: nil
+        )
+    }
+}
+
+private final class KeyEventDiagnostics {
+    private let duration: TimeInterval
+    private let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+    private var eventTapPort: CFMachPort?
+    private var eventTapSource: CFRunLoopSource?
+
+    init(duration: TimeInterval) {
+        self.duration = duration
+    }
+
+    func run() {
+        setbuf(stdout, nil)
+        printLine("CapsMov key diagnostics ready")
+        printLine("AXTrusted=\(AXIsProcessTrusted())")
+
+        if let secureInputStatus = SecureInputMonitor.currentStatus() {
+            printLine("SecureInput=blocked pid=\(secureInputStatus.pid) owner=\(secureInputStatus.owner?.name ?? "unknown")")
+        } else {
+            printLine("SecureInput=clear")
+        }
+
+        startHIDMonitor()
+        startEventTap()
+
+        if duration > 0 {
+            printLine("Press Caps Lock and Caps+E/D/S/F now. Listening for \(String(format: "%.1f", duration)) seconds.")
+            let end = Date().addingTimeInterval(duration)
+            while Date() < end {
+                CFRunLoopRunInMode(.defaultMode, 0.25, false)
+            }
+        }
+
+        stop()
+        printLine("CapsMov key diagnostics finished")
+    }
+
+    fileprivate func handle(value: IOHIDValue) {
+        let element = IOHIDValueGetElement(value)
+        let usagePage = IOHIDElementGetUsagePage(element)
+        let usage = IOHIDElementGetUsage(element)
+        guard usagePage == kHIDPage_KeyboardOrKeypad, Self.trackedHIDUsages.contains(usage) else {
+            return
+        }
+
+        let pressed = IOHIDValueGetIntegerValue(value) != 0
+        let device = IOHIDElementGetDevice(element)
+        printLine(
+            "HID key=\(Self.nameForHIDUsage(usage)) usage=\(usage) value=\(pressed ? 1 : 0) device=\(Self.deviceDescription(device))"
+        )
+    }
+
+    fileprivate func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            printLine("CGEventTap disabled type=\(Self.nameForEventType(type)); re-enabling")
+            if let eventTapPort {
+                CGEvent.tapEnable(tap: eventTapPort, enable: true)
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        guard Self.trackedKeyCodes.contains(keyCode) else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        printLine(
+            "CGEvent type=\(Self.nameForEventType(type)) key=\(Self.nameForKeyCode(keyCode)) keyCode=\(keyCode) flags=0x\(String(event.flags.rawValue, radix: 16))"
+        )
+        return Unmanaged.passUnretained(event)
+    }
+
+    private func startHIDMonitor() {
+        let keyboards: [[String: Any]] = [
+            [
+                kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop,
+                kIOHIDDeviceUsageKey: kHIDUsage_GD_Keyboard,
+            ],
+            [
+                kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop,
+                kIOHIDDeviceUsageKey: kHIDUsage_GD_Keypad,
+            ],
+        ]
+
+        IOHIDManagerSetDeviceMatchingMultiple(manager, keyboards as CFArray)
+        IOHIDManagerRegisterInputValueCallback(manager, diagnosticHIDValueCallback, Unmanaged.passUnretained(self).toOpaque())
+        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
+        let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        printLine("IOHIDManagerOpen=\(Self.hex(result))")
+    }
+
+    private func startEventTap() {
+        let mask = Self.eventMask([.keyDown, .keyUp, .flagsChanged])
+        guard let tap = CGEvent.tapCreate(
+            tap: .cghidEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: diagnosticEventTapCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            printLine("CGEventTap=failed")
+            return
+        }
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .defaultMode)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        eventTapPort = tap
+        eventTapSource = source
+        printLine("CGEventTap=ready")
+    }
+
+    private func stop() {
+        if let eventTapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), eventTapSource, .defaultMode)
+        }
+        if let eventTapPort {
+            CFMachPortInvalidate(eventTapPort)
+        }
+        IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
+        IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+    }
+
+    private func printLine(_ value: String) {
+        print(value)
+        fflush(stdout)
+    }
+
+    private static let trackedHIDUsages = Set<UInt32>([4, 7, 8, 9, 12, 13, 14, 15, 22, 57])
+    private static let trackedKeyCodes = Set<Int>([1, 2, 3, 14, 34, 37, 38, 40, 57])
+
+    private static func nameForHIDUsage(_ usage: UInt32) -> String {
+        switch usage {
+        case 4: return "A"
+        case 7: return "D"
+        case 8: return "E"
+        case 9: return "F"
+        case 12: return "I"
+        case 13: return "J"
+        case 14: return "K"
+        case 15: return "L"
+        case 22: return "S"
+        case 57: return "CapsLock"
+        default: return "usage-\(usage)"
+        }
+    }
+
+    private static func nameForKeyCode(_ keyCode: Int) -> String {
+        switch keyCode {
+        case 1: return "S"
+        case 2: return "D"
+        case 3: return "F"
+        case 14: return "E"
+        case 34: return "I"
+        case 37: return "L"
+        case 38: return "J"
+        case 40: return "K"
+        case 57: return "CapsLock"
+        default: return "keyCode-\(keyCode)"
+        }
+    }
+
+    private static func nameForEventType(_ type: CGEventType) -> String {
+        switch type {
+        case .keyDown: return "keyDown"
+        case .keyUp: return "keyUp"
+        case .flagsChanged: return "flagsChanged"
+        case .tapDisabledByTimeout: return "tapDisabledByTimeout"
+        case .tapDisabledByUserInput: return "tapDisabledByUserInput"
+        default: return "type-\(type.rawValue)"
+        }
+    }
+
+    private static func eventMask(_ types: [CGEventType]) -> CGEventMask {
+        types.reduce(CGEventMask(0)) { mask, type in
+            mask | (CGEventMask(1) << CGEventMask(type.rawValue))
+        }
+    }
+
+    private static func deviceDescription(_ device: IOHIDDevice?) -> String {
+        guard let device else {
+            return "unknown"
+        }
+        let product = stringProperty(kIOHIDProductKey, device) ?? "unknown"
+        let vendorID = integerProperty(kIOHIDVendorIDKey, device).map(String.init) ?? "unknown"
+        let productID = integerProperty(kIOHIDProductIDKey, device).map(String.init) ?? "unknown"
+        return "\(product) vendor=\(vendorID) product=\(productID)"
+    }
+
+    private static func stringProperty(_ key: String, _ device: IOHIDDevice) -> String? {
+        IOHIDDeviceGetProperty(device, key as CFString).map { "\($0)" }
+    }
+
+    private static func integerProperty(_ key: String, _ device: IOHIDDevice) -> Int? {
+        IOHIDDeviceGetProperty(device, key as CFString).flatMap { ($0 as? NSNumber)?.intValue }
+    }
+
+    private static func hex(_ value: IOReturn) -> String {
+        String(format: "0x%08x", UInt32(bitPattern: value))
+    }
+}
+
+private func diagnosticHIDValueCallback(
+    context: UnsafeMutableRawPointer?,
+    result: IOReturn,
+    sender: UnsafeMutableRawPointer?,
+    value: IOHIDValue?
+) {
+    guard result == kIOReturnSuccess, let context, let value else {
+        return
+    }
+    let diagnostics = Unmanaged<KeyEventDiagnostics>.fromOpaque(context).takeUnretainedValue()
+    diagnostics.handle(value: value)
+}
+
+private func diagnosticEventTapCallback(
+    proxy: CGEventTapProxy,
+    type: CGEventType,
+    event: CGEvent,
+    refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    guard let refcon else {
+        return Unmanaged.passUnretained(event)
+    }
+    let diagnostics = Unmanaged<KeyEventDiagnostics>.fromOpaque(refcon).takeUnretainedValue()
+    return diagnostics.handle(type: type, event: event)
+}
+
 private struct CapsloxPopoverView: View {
     @ObservedObject var viewModel: CapsloxStatusViewModel
 
@@ -293,6 +607,7 @@ private struct CapsloxPopoverView: View {
             directionPad
             utilityGrid
             statusRows
+            secureInputWarning
             footer
         }
     }
@@ -448,8 +763,38 @@ private struct CapsloxPopoverView: View {
                 actionTitle: "Open",
                 action: viewModel.openInputMonitoringSettings
             )
+            StatusActionRow(
+                title: CapsloxPresentation.secureInputStatusTitle,
+                value: viewModel.secureInputStatus == nil
+                    ? CapsloxPresentation.secureInputReadyValue
+                    : CapsloxPresentation.secureInputBlockedValue,
+                symbol: viewModel.secureInputStatus == nil ? "checkmark.circle.fill" : "lock.trianglebadge.exclamationmark.fill",
+                isReady: viewModel.secureInputStatus == nil,
+                actionTitle: viewModel.secureInputStatus.map(CapsloxPresentation.secureInputActionTitle) ?? "Refresh",
+                action: viewModel.resolveSecureInput
+            )
         }
         .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private var secureInputWarning: some View {
+        if let secureInputStatus = viewModel.secureInputStatus {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "lock.trianglebadge.exclamationmark.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 16)
+
+                Text(CapsloxPresentation.secureInputDetail(for: secureInputStatus))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .background(Color.orange.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
     }
 
     private var footer: some View {
@@ -498,12 +843,18 @@ private struct CapsloxPopoverView: View {
         if !viewModel.isRuntimeReady {
             return .orange
         }
+        if viewModel.secureInputStatus != nil {
+            return .orange
+        }
         return viewModel.isEnabled ? .green : .secondary
     }
 
     private var statusSymbol: String {
         if !viewModel.isRuntimeReady {
             return "exclamationmark.triangle.fill"
+        }
+        if viewModel.secureInputStatus != nil {
+            return "lock.fill"
         }
         return viewModel.isEnabled ? "bolt.fill" : "pause.fill"
     }
@@ -622,6 +973,8 @@ private struct ActionChip: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(Color.accentColor.opacity(0.13))
@@ -868,6 +1221,13 @@ if let previewPath = argumentValue(after: "--render-ui-preview") {
         fputs("Failed to render UI preview: \(error)\n", stderr)
         exit(1)
     }
+}
+
+if CommandLine.arguments.contains("--diagnose-key-events") {
+    let rawDuration = argumentValue(after: "--duration")
+    let duration = rawDuration.flatMap(TimeInterval.init) ?? 20
+    KeyEventDiagnostics(duration: max(0, duration)).run()
+    exit(0)
 }
 
 private let app = NSApplication.shared

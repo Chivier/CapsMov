@@ -22,7 +22,7 @@ test -f "$APP_PATH/Contents/Resources/CapsloxIcon.icns"
 /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$APP_PATH/Contents/Info.plist" | grep -qx "CapsloxIcon"
 /usr/libexec/PlistBuddy -c "Print :LSUIElement" "$APP_PATH/Contents/Info.plist" | grep -qx "true"
 file "$APP_PATH/Contents/Resources/CapsloxIcon.icns" | grep -qi "icon"
-"$APP_PATH/Contents/MacOS/CapsMov" --smoke-test-ui | grep -qx "CapsMov status bar UI ready"
+"$APP_PATH/Contents/MacOS/CapsMov" --smoke-test-ui | grep -qx "CapsMov status bar UI ready; status icon ready"
 "$APP_PATH/Contents/MacOS/CapsMov" --render-ui-preview "$TMP_DIR/permission-config.png" --permission-config | grep -qx "rendered $TMP_DIR/permission-config.png"
 test -s "$TMP_DIR/permission-config.png"
 

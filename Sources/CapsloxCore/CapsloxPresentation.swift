@@ -33,6 +33,10 @@ public enum CapsloxPresentation {
         .init(input: "Input Monitoring", output: "Allow CapsMov to read physical Caps Lock state"),
     ]
 
+    public static let secureInputStatusTitle = "Secure Input"
+    public static let secureInputReadyValue = "Clear"
+    public static let secureInputBlockedValue = "Blocked"
+
     public static let navigationMappings: [CapsloxPresentationMapping] = [
         .init(input: "Caps + E", output: "Up"),
         .init(input: "Caps + D", output: "Down"),
@@ -43,4 +47,18 @@ public enum CapsloxPresentation {
         .init(input: "Caps + J", output: "Line Start"),
         .init(input: "Caps + L", output: "Line End"),
     ]
+
+    public static func secureInputDetail(for status: SecureInputStatus) -> String {
+        if let owner = status.owner {
+            return "Keyboard input is blocked by Secure Input from \(owner.name)."
+        }
+        return "macOS still reports Secure Input from pid \(status.pid), but that process is no longer running. Log out and back in if CapsMov still cannot receive keys."
+    }
+
+    public static func secureInputActionTitle(for status: SecureInputStatus) -> String {
+        guard let owner = status.owner else {
+            return "Refresh"
+        }
+        return "Quit \(owner.name)"
+    }
 }
