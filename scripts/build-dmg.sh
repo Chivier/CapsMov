@@ -9,7 +9,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build-dmg.sh [--output PATH]
 
-Builds a compressed CapsMov DMG containing CapsMov.app and autostart helpers.
+Builds a compressed CapsMov DMG containing CapsMov.app and an Applications link.
 USAGE
 }
 
@@ -36,9 +36,6 @@ trap 'rm -rf "$STAGE_DIR"' EXIT
 
 "$ROOT_DIR/scripts/build-app.sh" --output "$STAGE_DIR/CapsMov.app"
 
-cp "$ROOT_DIR/packaging/Install Autostart.command" "$STAGE_DIR/Install Autostart.command"
-cp "$ROOT_DIR/packaging/Uninstall Autostart.command" "$STAGE_DIR/Uninstall Autostart.command"
-chmod +x "$STAGE_DIR/Install Autostart.command" "$STAGE_DIR/Uninstall Autostart.command"
 ln -s /Applications "$STAGE_DIR/Applications"
 
 mkdir -p "$(dirname "$OUTPUT_PATH")"

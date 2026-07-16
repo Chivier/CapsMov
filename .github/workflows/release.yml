@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build and verify release
+        run: scripts/release.sh --verify-tag
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          DMG="dist/CapsMov-$VERSION-macOS.dmg"
+          CHECKSUM="$DMG.sha256"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" "$DMG" "$CHECKSUM" --clobber
+          else
+            gh release create "v$VERSION" "$DMG" "$CHECKSUM" \
+              --title "CapsMov $VERSION" \
+              --generate-notes
+          fi

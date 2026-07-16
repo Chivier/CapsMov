@@ -1,6 +1,5 @@
-test
+.DS_Store
 .build/
 .swiftpm/
 dist/
-docs/superpowers/
-docs/nana-shots/
+*.dSYM/

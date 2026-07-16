@@ -1,211 +1,128 @@
-# CapsMov Basic Navigation
+# CapsMov
 
-CapsMov is a lightweight native macOS menu-bar tool that turns `Caps Lock` into
-a temporary navigation layer.
+[![CI](https://github.com/Chivier/CapsMov/actions/workflows/ci.yml/badge.svg)](https://github.com/Chivier/CapsMov/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/Chivier/CapsMov)](https://github.com/Chivier/CapsMov/releases/latest)
 
-| Hotkey | Output |
+CapsMov is a lightweight native macOS menu-bar app that turns Caps Lock into a temporary navigation layer. It uses macOS system frameworks directly and does not require Karabiner-Elements.
+
+## Download and install
+
+CapsMov requires macOS 13 or later. Release builds are universal and support Apple Silicon and Intel Macs.
+
+1. Download the latest `CapsMov-*-macOS.dmg` from [GitHub Releases](https://github.com/Chivier/CapsMov/releases/latest).
+2. Open the DMG and drag `CapsMov.app` into `Applications`.
+3. Open CapsMov. If macOS says the developer cannot be verified, right-click the app, choose **Open**, and confirm once.
+4. Grant CapsMov both **Accessibility** and **Input Monitoring** access when prompted.
+5. Open **Settings…** from the menu-bar popover if you want CapsMov to launch at login.
+
+Releases are currently ad-hoc signed rather than Developer ID signed and notarized. Update downloads and installation therefore remain user-confirmed.
+
+## Shortcuts
+
+Hold Caps Lock and press:
+
+| Shortcut | Result |
 | --- | --- |
-| `Caps Lock + E` | Up |
-| `Caps Lock + D` | Down |
-| `Caps Lock + S` | Left |
-| `Caps Lock + F` | Right |
-| `Caps Lock + I` | Page Up |
-| `Caps Lock + K` | Page Down |
-| `Caps Lock + J` | Line Start (`Command + Left`) |
-| `Caps Lock + L` | Line End (`Command + Right`) |
+| `Caps + E` | Up |
+| `Caps + D` | Down |
+| `Caps + S` | Left |
+| `Caps + F` | Right |
+| `Caps + I` | Page Up |
+| `Caps + K` | Page Down |
+| `Caps + J` | Line Start (`Command + Left`) |
+| `Caps + L` | Line End (`Command + Right`) |
 
-Quickly tapping `Caps Lock` alone keeps the original macOS Caps Lock toggle.
-Holding `Caps Lock`, or pressing any other key while it is held, treats Caps as
-the temporary navigation-layer modifier instead.
+A quick standalone Caps Lock tap keeps the normal capitalization toggle. Holding Caps Lock longer, or pressing another key while it is held, uses it as the navigation modifier instead.
 
-## Native Implementation
+## Menu-bar app
 
-The current implementation does not depend on Karabiner-Elements. It is a small
-Swift executable built around a macOS HID event tap plus IOHID physical key
-state:
+The popover keeps the daily workflow compact:
 
-- `CapsloxCore` contains the tested remapping state machine.
-- `capslox` monitors the physical Caps Lock key with IOHID, so the navigation
-  layer is active only while Caps Lock is actually held down.
-- CapsMov distinguishes a short standalone Caps tap from a modifier hold using a
-  tap threshold. The default threshold is `250ms`.
-- CapsMov clears the system Caps Lock state whenever Caps is used as the
-  navigation layer, including after a long press, so releasing Caps Lock leaves
-  normal typing unchanged.
-- A HID-level `CGEventTap` suppresses consumed source events and posts the
-  mapped navigation events before the system toggles Caps Lock.
-- Generated events are tagged and ignored by the tap to avoid recursion.
-
-This keeps the open-source surface small: Swift Package Manager, Swift Testing,
-and macOS system frameworks only.
-
-## Menu Bar UI
-
-The packaged app appears in the macOS menu bar as `CapsMov`. It stays out of the
-Dock and exposes a compact status popover:
-
-- Running, paused, or permission-needed state
-- An enabled switch for the Caps navigation layer
-- The current tap threshold
-- A compact shortcut map for `Caps + E/D/S/F/I/K/J/L`
-- A first-run Permission Config screen for Accessibility and Input Monitoring
-- A Launch at Login switch
-- Quit
-
-### Screenshots
-
-Permission setup:
-
-![CapsMov Permission Config](docs/capsmov-permission-config.png)
-
-Main popover:
+- current running, paused, permission, and Secure Input status;
+- a single switch for the navigation layer;
+- the shortcut map;
+- direct links to the required macOS privacy panes;
+- recovery guidance when Secure Input blocks keyboard monitoring;
+- access to Settings and Quit.
 
 ![CapsMov main popover](docs/capsmov-main-popover.png)
 
-## Bluetooth Keyboard Support
+First-run permission guidance:
 
-Bluetooth keyboards are supported generically. CapsMov handles every keyboard
-event macOS delivers to the HID event tap, regardless of transport, vendor,
-product ID, or keyboard model.
+![CapsMov permission setup](docs/capsmov-permission-config.png)
 
-That means there are no per-keyboard rules for Bluetooth devices. If macOS sees
-the device as a keyboard and emits normal key events, CapsMov applies the same
-Caps Lock layer to it.
+## Settings and updates
 
-Known limits:
+Settings contains the options that should not crowd the status popover:
 
-- Secure Input fields and some system security contexts can block event taps.
-- The login window is out of scope for this lightweight user-session tool.
-- Devices that do not emit normal macOS keyboard events cannot be remapped by
-  this user-space implementation.
+- **Launch CapsMov at login**
+- **Caps Lock tap threshold** from 150 to 500 ms
+- **Check for updates automatically**
+- current version and an on-demand **Check Now** action
+- a direct download action when a newer GitHub Release is available
 
-## Build And Run
+![CapsMov settings](docs/capsmov-settings.png)
 
-Build and test:
+Automatic checks run at most once per day and only request the public GitHub Releases API. CapsMov does not send usage or keyboard data. When an update is available, it opens the release DMG; replacing the app remains manual until releases are Developer ID signed and notarized.
+
+## Permissions and recovery
+
+CapsMov needs two macOS permissions:
+
+- **Accessibility** lets it rewrite keyboard events.
+- **Input Monitoring** lets it read the physical Caps Lock state.
+
+Open the corresponding panes from the popover, or go to **System Settings → Privacy & Security**.
+
+Secure Input fields and some system security contexts temporarily block event taps. CapsMov resumes automatically after the password field loses focus. If macOS leaves Secure Input attached to a process that has already exited, the popover offers a safe reset action: it locks the screen once and rechecks after you unlock, without quitting your apps or documents.
+
+The login window is outside the scope of this user-session app. Keyboards that do not emit normal macOS keyboard events cannot be remapped by this implementation.
+
+## Build from source
+
+The project uses Swift Package Manager and macOS system frameworks only.
 
 ```sh
 swift test
 swift build
-```
-
-Run from the repo:
-
-```sh
 swift run capslox
 ```
 
-For a release binary:
-
-```sh
-swift build -c release
-.build/release/capslox
-```
-
-To tune the short-tap threshold:
-
-```sh
-CAPSLOX_TAP_THRESHOLD_MS=300 .build/release/capslox
-```
-
-## Package As An App Or DMG
-
-Build a background macOS app bundle:
+Build the app bundle or DMG:
 
 ```sh
 scripts/build-app.sh
-```
-
-The app is written to:
-
-```text
-dist/CapsMov.app
-```
-
-The app icon is generated from `assets/CapsloxIcon.png`, converted to
-`assets/CapsloxIcon.icns`, and bundled into `CapsMov.app` automatically.
-
-Build a DMG:
-
-```sh
 scripts/build-dmg.sh
 ```
 
-The DMG is written to:
+Generated artifacts are written under `dist/` and are intentionally ignored by Git.
 
-```text
-dist/CapsMov.dmg
-```
-
-The app is ad-hoc signed for local use. Public distribution outside your own
-machines should add Developer ID signing and notarization.
-
-## Autostart
-
-The DMG includes:
-
-```text
-Install Autostart.command
-Uninstall Autostart.command
-```
-
-`Install Autostart.command` copies `CapsMov.app` to:
-
-```text
-~/Applications/CapsMov.app
-```
-
-Then it installs and starts this user LaunchAgent:
-
-```text
-~/Library/LaunchAgents/com.capsmov.app.plist
-```
-
-To install autostart with a custom tap threshold, run the installer command from
-Terminal with an environment variable:
+For a full local release verification and versioned artifact:
 
 ```sh
-CAPSLOX_TAP_THRESHOLD_MS=300 "/Volumes/CapsMov/Install Autostart.command"
+scripts/release.sh
 ```
 
-`Uninstall Autostart.command` removes the LaunchAgent. It leaves
-`~/Applications/CapsMov.app` in place so you can still run or delete the app
-manually.
+This runs the Swift tests, packaging smoke tests, DMG validation, and SHA-256 generation.
 
-The LaunchAgent starts CapsMov at login but does not force-restart it after you
-choose `Quit` from the menu-bar popover.
+## Release process
 
-On first run, macOS needs permission to let CapsMov modify keyboard events.
-Enable the terminal or app that launches CapsMov in:
+The current version is stored in `VERSION` and mirrored by `CapsMovRelease.currentVersion` for development builds. The release script rejects version drift.
 
-```text
-System Settings > Privacy & Security > Accessibility
-```
+To publish a release:
 
-CapsMov also reads physical keyboard state through IOHID. Enable the same
-launcher in:
+1. update both version values;
+2. run `scripts/release.sh`;
+3. commit and push the verified changes;
+4. tag the commit as `v<version>` and push the tag.
 
-```text
-System Settings > Privacy & Security > Input Monitoring
-```
+The [Release workflow](.github/workflows/release.yml) rebuilds and tests the app on macOS, creates the GitHub Release, and uploads the versioned DMG plus its SHA-256 checksum. The [CI workflow](.github/workflows/ci.yml) runs tests and packaging checks for main and pull requests.
 
-## Behavior Notes
+## Architecture
 
-`Caps Lock + J/L` uses macOS line navigation:
+- `CapsloxCore` contains the tested remapping state machine, presentation data, Secure Input parsing, version comparison, and GitHub Release models.
+- `capslox` owns the HID monitor, event tap, menu-bar UI, settings window, login-launch integration, and update checks.
+- Generated events are marked and ignored by the event tap to prevent recursion.
+- IOHID tracks the physical Caps Lock state across built-in, USB, and Bluetooth keyboards.
 
-```text
-Command + Left
-Command + Right
-```
-
-This is more consistent across macOS text fields than raw `Home` / `End`, which
-some apps interpret as document start/end.
-
-When `Caps Lock` is held with any non-mapped key, that key is passed through,
-but the gesture no longer toggles Caps Lock on release. Only a standalone tap
-within the threshold toggles the system Caps Lock state.
-
-## Legacy Karabiner Path
-
-`install-macos-karabiner.sh` and the shell tests are kept as legacy material for
-the earlier Karabiner-based experiment. They are not required by the native
-implementation.
+`Caps + J/L` emits `Command + Left/Right`, which behaves consistently as line navigation in standard macOS text fields.
