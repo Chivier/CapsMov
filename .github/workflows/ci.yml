@@ -9,7 +9,7 @@ jobs:
   test-and-package:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check Swift formatting
         run: xcrun swift-format lint --strict --recursive Sources tests
       - name: Test
